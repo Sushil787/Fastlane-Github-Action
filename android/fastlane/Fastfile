@@ -1,0 +1,130 @@
+
+fastlane_require 'dotenv'
+
+default_platform(:android)
+
+# VALUE GET FROM ENVIRONMENT
+APP_ID = ENV['FIREBASE_ANDROID_APPID']
+FIREBASE_CI_TOKEN = ENV['FIREBASE_CI_TOKEN']
+BUILD_NUMBER = ENV["BUILD_NUMBER"]
+APK_PATH = ENV["APK_PATH"]
+GROUP = ENV["GROUPS"]
+SACK_WEB_HOOK = ENV["HOOK"] 
+SERVICE_CREDENTIAL = "#{Dir.pwd}#{ENV["ANDROID_FIREBASE_APP_DISTRIBUTION_CREDENTIALS_FILE_PATH"]}"
+
+#EXTENSION ON STRING TO CHANGE THE PROMPT COLOR
+class String
+  def black;          "\e[30m#{self}\e[0m" end
+  def red;            "\e[31m#{self}\e[0m" end
+  def green;          "\e[32m#{self}\e[0m" end
+  def brown;          "\e[33m#{self}\e[0m" end
+  def blue;           "\e[34m#{self}\e[0m" end
+  def magenta;        "\e[35m#{self}\e[0m" end
+  def cyan;           "\e[36m#{self}\e[0m" end
+  def gray;           "\e[37m#{self}\e[0m" end
+  end
+
+  # FOR ANDROID
+  platform :android do
+    desc "Deploy a new beta"
+    #TEST
+    lane :test_env do
+      desc "check cred"
+      puts "#{Dir.pwd}#{ENV["ANDROID_FIREBASE_APP_DISTRIBUTION_CREDENTIALS_FILE_PATH"]}"
+      sh "cat #{SERVICE_CREDENTIAL}"
+      puts "app id is #{ENV['FIREBASE_ANDROID_APPID']}"
+    end
+    
+    #BUILD AND DEPLOY IN FIREBASE APP DISTRIBUTION
+    lane :distribute_app do
+      begin
+        latest_release = firebase_app_distribution_get_latest_release(
+          app: APP_ID
+        )
+        puts "#{latest_release} latest release".green
+
+
+        # CHECK THE BUILD IF NOT PREVIOUS BUILD AVAILABLE GO TO ELSE AND RELEASE FIRST BUILD
+        if !latest_release.nil?
+          puts "The current version is #{latest_release[:displayVersion]}"
+          sh "./build_bundle.sh #{latest_release[:buildVersion]}"
+          firebase_app_distribution(
+          app: APP_ID,
+          testers: GROUP,
+          release_notes: "New release #{BUILD_NUMBER.to_i+1}",
+          android_artifact_type: "APK",
+          firebase_cli_path: “/usr/local/bin/firebase”,
+          service_credentials_file: SERVICE_CREDENTIAL,
+          apk_path: APK_PATH
+         )
+         latest_release = firebase_app_distribution_get_latest_release(
+          app: APP_ID
+        )
+        puts "latest binary release uri #{ latest_release[:binaryDownloadUri]}"
+        #SEND SUCCESS MESSAGE TO SLACK
+        slack(
+          message: "App Release! successfully",
+          success: true,
+          channel: "#build-test-channel",
+          slack_url: SACK_WEB_HOOK,
+          attachment_properties: { 
+          fields: [{
+           title: "Download App Link",
+           value: latest_release[:binaryDownloadUri],
+           short: false
+           }]
+         }
+       )
+        
+        else
+          puts "Previous build not found".red
+          puts "setting up first build".green
+          puts "deploying ".green
+         
+         appLink =  firebase_app_distribution(
+              app: APP_ID,
+              testers: GROUP,
+              release_notes: BUILD_NUMBER,
+              android_artifact_type: "APK",
+              firebase_cli_path: “/usr/bin/firebase”,
+              service_credentials_file: SERVICE_CREDENTIAL,
+              apk_path: APK_PATH
+            )
+            latest_release = firebase_app_distribution_get_latest_release(
+              app: APP_ID
+            )
+            puts "latest binary release uri #{ latest_release[:binaryDownloadUri]}"
+            # SEND SUCCESSFUL MESSAGE TO SLACK
+            slack(
+              message: "App Release! successfully",
+              success: true,
+              channel: "#build-test-channel",
+              slack_url: SACK_WEB_HOOK,
+              attachment_properties: { 
+              fields: [{
+               title: "Download App Link",
+               value: latest_release[:binaryDownloadUri],
+               short: false
+               }]
+             }
+           )
+           puts "messaged to slack"
+        end
+      rescue => exception
+        onError(exception)
+      end
+    end
+  
+
+    #HANDLE ERROR
+    def onError(exception)
+      puts "the error is #{exception}".red
+      slack(
+        message: "Error Building the app #{exception}",
+        success: true,
+        slack_url: SACK_WEB_HOOK,
+        channel:"#build-test-channel"
+      )
+    end
+  end
+  
